@@ -1,4 +1,271 @@
-<html>
-<head></head>
-<body>테스트페이지</body>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>투명 서명 다운로더</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter Font (Tailwind default is Inter) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        /* 서명 캔버스 스타일 */
+        #signatureCanvas {
+            touch-action: none; /* 터치 이벤트가 캔버스 내부에서만 작동하도록 설정 */
+            border: 2px solid #e5e7eb; /* 경계를 명확하게 표시 */
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            cursor: crosshair;
+            background-color: white; /* 사용자가 그리는 동안 배경을 흰색으로 표시 */
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div id="app-container" class="w-full max-w-2xl bg-white rounded-xl shadow-2xl p-6 md:p-8 space-y-6">
+        <h1 class="text-3xl font-extrabold text-gray-800 text-center">서명 생성 및 투명 PNG 다운로드</h1>
+        <p class="text-gray-500 text-center mb-6">아래 캔버스에 서명해주세요. 서명 영역 외의 배경은 투명하게 저장됩니다.</p>
+
+        <!-- 서명 캔버스 영역 -->
+        <canvas id="signatureCanvas" class="w-full aspect-[4/2] rounded-lg"></canvas>
+
+        <!-- 컨트롤 버튼 그룹 -->
+        <div class="flex flex-col sm:flex-row gap-4">
+            <button id="clearButton" class="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 shadow-md transform hover:scale-[1.02]">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 10-2 0v6a1 1 0 102 0V8z" clip-rule="evenodd" />
+                </svg>
+                서명 지우기
+            </button>
+            <button id="downloadButton" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 shadow-lg transform hover:scale-[1.02]">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L10 12.586l2.293-2.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v7a1 1 0 11-2 0V4a1 1 0 011-1z" clip-rule="evenodd" />
+                </svg>
+                투명 PNG로 다운로드
+            </button>
+        </div>
+
+        <!-- 메시지 박스 -->
+        <div id="messageBox" class="text-sm text-center text-green-600 font-medium h-6"></div>
+    </div>
+
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        // Firebase SDK 모듈 임포트
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firestore 로깅 레벨 설정 (필수)
+        setLogLevel('Debug');
+
+        // 전역 변수 초기화 및 Firebase 설정 로드
+        let app, db, auth;
+        let userId = 'unknown';
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        if (firebaseConfig) {
+            // 1. Firebase 앱 초기화
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+            } catch (error) {
+                console.error("Firebase 초기화 오류:", error);
+            }
+
+            // 2. 인증 상태 변경 리스너 설정
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    console.log("인증 완료. 사용자 ID:", userId);
+                    // 이 애플리케이션은 Firestore를 사용하지 않으므로, 인증 후 추가 작업은 생략합니다.
+                } else {
+                    console.log("사용자가 로그아웃했거나 인증되지 않았습니다.");
+                }
+            });
+
+            // 3. 인증 처리
+            const authenticate = async () => {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("커스텀 토큰으로 인증 성공.");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("익명 인증 성공.");
+                    }
+                } catch (error) {
+                    console.error("인증 오류:", error);
+                }
+            };
+
+            // 인증 시작
+            authenticate();
+        } else {
+            console.warn("Firebase 설정이 제공되지 않아 데이터 저장 기능은 비활성화됩니다.");
+        }
+    </script>
+
+    <!-- Signature Pad Logic -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('signatureCanvas');
+            const ctx = canvas.getContext('2d');
+            const clearButton = document.getElementById('clearButton');
+            const downloadButton = document.getElementById('downloadButton');
+            const messageBox = document.getElementById('messageBox');
+
+            let isDrawing = false;
+            let lastX = 0;
+            let lastY = 0;
+
+            // 캔버스 크기 설정 및 초기화
+            function setupCanvas() {
+                // 캔버스 해상도 설정 (높은 DPI 지원을 위해 실제 픽셀 크기를 CSS 크기에 맞춰 설정)
+                const rect = canvas.getBoundingClientRect();
+                canvas.width = rect.width;
+                canvas.height = rect.height;
+
+                // 캔버스 스타일 설정
+                ctx.strokeStyle = '#000000'; // 서명 색상은 검은색
+                ctx.lineWidth = 4;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                clearCanvas(false); // 초기화 시 사용자에게 보이는 배경은 흰색으로 유지 (CSS로 처리)
+            }
+
+            // 캔버스 지우기
+            // preserveBackground: true이면 캔버스 영역을 흰색으로 다시 칠하여 시각적으로 깨끗하게 지웁니다.
+            // 다운로드 시에는 배경이 투명해야 하므로 false를 사용합니다.
+            function clearCanvas(preserveBackground = true) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                if (preserveBackground) {
+                     // 흰색 배경으로 채우기 (선택 사항, CSS 배경이 이미 흰색이므로 시각적 일관성 유지)
+                    // ctx.fillStyle = 'white';
+                    // ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    showMessage("서명이 지워졌습니다.", 3000);
+                }
+            }
+
+            // 마우스/터치 좌표를 캔버스 좌표로 변환
+            function getCanvasCoordinates(e) {
+                const rect = canvas.getBoundingClientRect();
+                let clientX, clientY;
+
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else {
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+
+                // 캔버스 내에서의 상대 좌표 계산
+                const x = (clientX - rect.left) * (canvas.width / rect.width);
+                const y = (clientY - rect.top) * (canvas.height / rect.height);
+                return { x, y };
+            }
+
+            // 그리기 시작
+            function startDrawing(e) {
+                e.preventDefault();
+                isDrawing = true;
+                const coords = getCanvasCoordinates(e);
+                [lastX, lastY] = [coords.x, coords.y];
+            }
+
+            // 그리는 중
+            function draw(e) {
+                e.preventDefault();
+                if (!isDrawing) return;
+
+                const coords = getCanvasCoordinates(e);
+
+                ctx.beginPath();
+                ctx.moveTo(lastX, lastY);
+                ctx.lineTo(coords.x, coords.y);
+                ctx.stroke();
+
+                [lastX, lastY] = [coords.x, coords.y];
+            }
+
+            // 그리기 종료
+            function stopDrawing() {
+                isDrawing = false;
+            }
+
+            // 다운로드 처리 함수
+            function downloadSignature() {
+                // 1. 캔버스 상태 확인
+                // 서명이 비어있는지 확인하는 간단한 방법 (모든 픽셀이 0,0,0,0인지 확인은 복잡하므로, 간단히 픽셀 데이터 확인)
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                let isEmpty = true;
+                for (let i = 3; i < imageData.data.length; i += 4) { // 알파 채널 확인
+                    if (imageData.data[i] !== 0) {
+                        isEmpty = false;
+                        break;
+                    }
+                }
+
+                if (isEmpty) {
+                    showMessage("서명이 비어있습니다. 먼저 서명을 해주세요.", 5000, 'text-red-600');
+                    return;
+                }
+
+                // 2. 투명 PNG 생성
+                // canvas.toDataURL('image/png')는 기본적으로 투명 배경을 지원합니다.
+                const imageURL = canvas.toDataURL('image/png');
+
+                // 3. 다운로드 트리거
+                const link = document.createElement('a');
+                link.download = 'signature_transparent.png'; // 다운로드 파일 이름
+                link.href = imageURL;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                showMessage("투명 PNG 파일 다운로드가 시작되었습니다.", 5000);
+            }
+
+            // 메시지 표시 함수
+            function showMessage(msg, duration = 3000, colorClass = 'text-green-600') {
+                messageBox.className = `text-sm text-center font-medium h-6 ${colorClass}`;
+                messageBox.textContent = msg;
+                setTimeout(() => {
+                    messageBox.textContent = '';
+                    messageBox.className = 'text-sm text-center font-medium h-6'; // Reset to default
+                }, duration);
+            }
+
+            // 이벤트 리스너 등록
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', draw);
+            window.addEventListener('mouseup', stopDrawing);
+
+            // 모바일 터치 이벤트 리스너 등록
+            canvas.addEventListener('touchstart', startDrawing, { passive: false });
+            canvas.addEventListener('touchmove', draw, { passive: false });
+            window.addEventListener('touchend', stopDrawing);
+            window.addEventListener('touchcancel', stopDrawing);
+
+            clearButton.addEventListener('click', () => clearCanvas(true));
+            downloadButton.addEventListener('click', downloadSignature);
+
+            // 윈도우 크기 변경 시 캔버스 재설정
+            window.addEventListener('resize', setupCanvas);
+
+            // 초기 캔버스 설정
+            setupCanvas();
+        });
+    </script>
+</body>
 </html>
